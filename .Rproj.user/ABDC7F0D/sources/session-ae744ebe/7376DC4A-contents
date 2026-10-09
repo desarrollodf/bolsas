@@ -13,40 +13,30 @@ library(shinyWidgets)
 library(shinyBS)
 
 series_bolsas <- c(
-  "S&P IPSA" = "ipsa",
-  "Bovespa" = "ibov",
-  "S&P 500" = "spx",
-  "Euro Stoxx 50" = "euro"
+  "S&P IPSA" = "mxipsagc index",
+  "Bovespa" = "ibov index",
+  "S&P 500" = "spxt index",
+  "Euro Stoxx 50" = "sx5t index"
 )
 colores_bolsas <- c("#C5172E", "#73AF6F", "#27548A", "#309898")
 
-bolsas_local <- imap_dfr(
-  series_bolsas,
-  ~ read_xlsx("bolsas.xlsx", sheet = .x) %>%
-    mutate(code = .x, categoria = "local")
-)
+bolsas_bruto <- read_xlsx("datos.xlsx")
 
-# Índices en dólares
+bolsas_local <- bolsas_bruto %>%
+  filter(ticker %in% series_bolsas) %>%
+  mutate(categoria = "local")
 
-series_fx <- c("usdclp", "usdbrl", "eurusd")
-divisas <- imap_dfr(
-  series_fx,
-  ~ read_xlsx("bolsas.xlsx", sheet = .x) %>%
-    mutate(code = .x, categoria = "divisas")
-)
-
-bolsas_dolares <- bind_rows(bolsas_local, divisas) %>%
-  select(-categoria) %>%
-  pivot_wider(names_from = code, values_from = value) %>%
+bolsas_dolares <- bolsas_bruto %>%
+  pivot_wider(names_from = ticker, values_from = value) %>%
   arrange(date) %>%
   na.locf() %>%
   mutate(
-    ipsa = ipsa / usdclp,
-    ibov = ibov / usdbrl,
-    euro = euro * eurusd
+    `mxipsagc index` = `mxipsagc index` / `clp curncy`,
+    `ibov index` = `ibov index` / `brl curncy`,
+    `sx5t index` = `sx5t index` * `eur curncy`
     ) %>%
-  select(date, ipsa, ibov, spx, euro) %>%
-  pivot_longer(cols = -date, values_to = "value", names_to = "code") %>%
+  select(date, `mxipsagc index`, `ibov index`, `spxt index`, `sx5t index`) %>%
+  pivot_longer(cols = -date, values_to = "value", names_to = "ticker") %>%
   mutate(categoria = "dolares")
 
 # Tabla final
@@ -155,18 +145,18 @@ server <- function(input, output) {
           categoria == input$medicion,
           date >= max(date) - years(as.numeric(input$periodo))
           ) %>%
-        group_by(code) %>%
+        group_by(ticker) %>%
         mutate(value = value / first(value) * 100) %>%
         ungroup() %>%
         mutate(
-          code = factor(code, levels = series_bolsas, labels = names(series_bolsas))
+          ticker = factor(ticker, levels = series_bolsas, labels = names(series_bolsas))
         )
       
       grafico <- plot_ly(
         data = filtrado,
         x = ~date,
         y = ~value,
-        color = ~code,
+        color = ~ticker,
         colors = setNames(colores_bolsas, names(series_bolsas)),
         hoverinfo = "text",
         type = "scatter",

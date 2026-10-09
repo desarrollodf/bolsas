@@ -14,8 +14,8 @@ library(shadowtext)
 # IPSA (siguiendo el modelo DÓLAR)
 # =======================
 
-ipsa_pre <- read_xlsx("bolsas.xlsx", sheet = "ipsa") %>%
-  mutate(code = "ipsa")
+ipsa_pre <- read_xlsx("datos.xlsx") %>%
+  filter(ticker == "mxipsagc index")
 
 fecha_lastyr <- ipsa_pre %>%
   filter(!is.na(date), !is.na(value)) %>%
@@ -221,5 +221,3 @@ ggsave(
   dpi = dpi,
   bg = "transparent"
 )
-
-rsconnect::deployApp()
