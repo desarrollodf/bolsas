@@ -1,0 +1,4 @@
+blpapi
+pandas
+openpyxl
+xbbg
