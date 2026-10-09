@@ -1,6 +1,6 @@
 @echo off
 
-cd /d "Y:\Periodistas\DF Datos\apps_shiny\bolsas"
+cd /d "Y:\Periodistas\df_datos\apps_shiny\bolsas"
 
 git pull --rebase origin main
 
