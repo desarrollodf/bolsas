@@ -1,7 +1,7 @@
 """Descarga de datos Bloomberg y generación de gráficos del IPSA."""
 
 import re
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import matplotlib.dates as mdates
@@ -20,18 +20,13 @@ from PIL import Image, ImageFilter
 
 TONO = "#061763"
 
-# Conversión aproximada de unidades ggplot -> matplotlib
 MM_A_PT = 72.27 / 25.4
 LW_LINEA = 1.5 * MM_A_PT * 72 / 96
 
-
-# Carpeta donde está ubicado este script
 try:
     CARPETA = Path(__file__).resolve().parent
 except NameError:
-    # Para ejecución desde notebook / consola interactiva
     CARPETA = Path.cwd()
-
 
 CARPETA_FUENTES = CARPETA / "fuentes"
 
@@ -40,7 +35,6 @@ RUTA_FOTO = CARPETA / "bolsa_stgo.jpg"
 
 RUTA_GRAFICO = CARPETA / "grafico_ipsa.png"
 RUTA_TRANSPARENTE = CARPETA / "ipsa_transparente.png"
-
 
 TICKERS = [
     "mxipsagc index",
@@ -54,6 +48,40 @@ TICKERS = [
 
 
 # ============================================================
+# Diagnóstico de archivos
+# ============================================================
+
+def diagnosticar_archivo(ruta, etiqueta="Archivo"):
+    ruta = Path(ruta)
+
+    print(
+        f"{etiqueta}: {ruta.resolve()}",
+        flush=True,
+    )
+
+    print(
+        f"Existe: {ruta.exists()}",
+        flush=True,
+    )
+
+    if ruta.exists():
+        modificado = datetime.fromtimestamp(
+            ruta.stat().st_mtime
+        )
+
+        print(
+            f"Última modificación: "
+            f"{modificado.strftime('%Y-%m-%d %H:%M:%S')}",
+            flush=True,
+        )
+
+        print(
+            f"Tamaño: {ruta.stat().st_size:,} bytes",
+            flush=True,
+        )
+
+
+# ============================================================
 # Datos Bloomberg
 # ============================================================
 
@@ -62,16 +90,13 @@ def descargar_datos(
     anios=10,
     ruta_excel=RUTA_DATOS,
 ):
-    """
-    Descarga precios históricos desde Bloomberg mediante xbbg.
-
-    Devuelve un DataFrame largo con columnas:
-    ticker, date, value.
-    """
-
     from xbbg import blp
+    import blpapi
 
-    fecha_inicio = pd.Timestamp.today() - pd.DateOffset(years=anios)
+    fecha_inicio = (
+        pd.Timestamp.today()
+        - pd.DateOffset(years=anios)
+    )
 
     print(
         f"Descargando datos Bloomberg desde "
@@ -87,14 +112,20 @@ def descargar_datos(
 
     bolsas_bruto = normalizar_bdh(datos)
 
+    print(
+        f"Guardando Excel en: "
+        f"{Path(ruta_excel).resolve()}",
+        flush=True,
+    )
+
     bolsas_bruto.to_excel(
         ruta_excel,
         index=False,
     )
 
-    print(
-        f"datos.xlsx actualizado correctamente: {ruta_excel}",
-        flush=True,
+    diagnosticar_archivo(
+        ruta_excel,
+        "datos.xlsx",
     )
 
     print(
@@ -112,13 +143,6 @@ def descargar_datos(
 
 
 def normalizar_bdh(datos):
-    """
-    Convierte la salida de Bloomberg bdh a formato largo:
-
-    ticker | date | value
-
-    El ticker queda normalizado en minúsculas.
-    """
 
     df = (
         datos.to_pandas()
@@ -126,8 +150,6 @@ def normalizar_bdh(datos):
         else datos.copy()
     )
 
-    # Formato ancho típico de xbbg:
-    # MultiIndex de columnas (ticker, field)
     if isinstance(df.columns, pd.MultiIndex):
 
         df = (
@@ -142,12 +164,14 @@ def normalizar_bdh(datos):
             )
         )
 
-    # Formato largo
     elif {"ticker", "date", "value"}.issubset(df.columns):
 
         if "field" in df.columns:
             df = df[
-                df["field"].astype(str).str.upper() == "PX_LAST"
+                df["field"]
+                .astype(str)
+                .str.upper()
+                == "PX_LAST"
             ]
 
         df = df[
@@ -197,12 +221,6 @@ def font_add_google(
     nombre="Antonio",
     pesos=(400, 700),
 ):
-    """
-    Descarga una fuente desde Google Fonts si no existe
-    localmente y la registra en matplotlib.
-
-    Los archivos se guardan en ./fuentes/.
-    """
 
     CARPETA_FUENTES.mkdir(
         parents=True,
@@ -299,13 +317,6 @@ def editar_fondo(
     opacity=80,
     sigma=20,
 ):
-    """
-    Aplica colorización y desenfoque al fondo.
-
-    Equivalente aproximado a:
-    magick::image_colorize()
-    + image_blur().
-    """
 
     img = Image.open(ruta).convert("RGB")
 
@@ -334,12 +345,6 @@ def bg_cover(
     opacity=80,
     sigma=20,
 ):
-    """
-    Ajusta una imagen como CSS background-size: cover.
-
-    Mantiene proporción y recorta el exceso,
-    evitando deformaciones.
-    """
 
     img = editar_fondo(
         ruta,
@@ -389,11 +394,6 @@ def formato_cl(
     valor,
     decimales=2,
 ):
-    """
-    Formato numérico estilo chileno:
-
-    12.345,67
-    """
 
     return (
         f"{valor:,.{decimales}f}"
@@ -407,9 +407,6 @@ def _eje_vacio(
     fig,
     transparente=False,
 ):
-    """
-    Crea un eje sin elementos visuales.
-    """
 
     ax = fig.add_axes(
         [0, 0, 1, 1]
@@ -431,14 +428,10 @@ def _limites(
     y_max,
     mult=0.05,
 ):
-    """
-    Expansión aproximada de 5 %, similar a ggplot.
-    """
 
     dx = (x_fin - x_ini) * mult
     dy = (y_max - y_min) * mult
 
-    # Evitar rango Y igual a cero
     if dy == 0:
         dy = abs(y_max) * mult or 1
 
@@ -461,13 +454,10 @@ def preparar_ipsa(
     bolsas_bruto,
     ticker="mxipsagc index",
 ):
-    """
-    Filtra el IPSA y conserva aproximadamente
-    los últimos 12 meses.
-    """
 
     ipsa_pre = bolsas_bruto[
-        bolsas_bruto["ticker"].str.lower() == ticker.lower()
+        bolsas_bruto["ticker"].str.lower()
+        == ticker.lower()
     ].copy()
 
     ipsa_pre["date"] = pd.to_datetime(
@@ -491,7 +481,6 @@ def preparar_ipsa(
             "No se encontraron datos válidos del IPSA."
         )
 
-    # Último dato del año anterior
     previo = validos[
         validos["date"].dt.year
         == date.today().year - 1
@@ -529,6 +518,18 @@ def grafico_con_foto(
     ruta_salida=RUTA_GRAFICO,
     fuente="Antonio",
 ):
+
+    ruta_salida = Path(ruta_salida)
+
+    print(
+        "\n--- Generando gráfico con foto ---",
+        flush=True,
+    )
+
+    diagnosticar_archivo(
+        ruta_salida,
+        "PNG antes de guardar",
+    )
 
     if not Path(ruta_imagen).exists():
         raise FileNotFoundError(
@@ -572,10 +573,6 @@ def grafico_con_foto(
         dpi=300,
     )
 
-    # ========================================================
-    # Fondo sin deformación
-    # ========================================================
-
     px_w = round(
         fig.get_figwidth()
         * fig.dpi
@@ -601,10 +598,6 @@ def grafico_con_foto(
         fondo,
         aspect="auto",
     )
-
-    # ========================================================
-    # Gráfico
-    # ========================================================
 
     ax = _eje_vacio(
         fig,
@@ -705,13 +698,18 @@ def grafico_con_foto(
         zorder=5,
     )
 
-    # El eje Y también debe abarcar los textos
     _limites(
         ax,
         x_inicio,
         x_final,
         y_min,
         y_max + y_total * 0.30,
+    )
+
+    print(
+        f"Guardando gráfico en: "
+        f"{ruta_salida.resolve()}",
+        flush=True,
     )
 
     fig.savefig(
@@ -723,9 +721,9 @@ def grafico_con_foto(
 
     plt.close(fig)
 
-    print(
-        f"Gráfico generado: {ruta_salida}",
-        flush=True,
+    diagnosticar_archivo(
+        ruta_salida,
+        "PNG después de guardar",
     )
 
     return ruta_salida
@@ -742,6 +740,18 @@ def grafico_transparente(
     height_in=14.4,
     dpi=300,
 ):
+
+    ruta_salida = Path(ruta_salida)
+
+    print(
+        "\n--- Generando gráfico transparente ---",
+        flush=True,
+    )
+
+    diagnosticar_archivo(
+        ruta_salida,
+        "PNG transparente antes de guardar",
+    )
 
     fechas = mdates.date2num(
         ipsa["date"]
@@ -770,7 +780,6 @@ def grafico_transparente(
         valores,
         color=TONO,
         linewidth=LW_LINEA,
-        zorder=4,
     )
 
     ax.plot(
@@ -779,7 +788,6 @@ def grafico_transparente(
         "o",
         color=TONO,
         markersize=3 * MM_A_PT,
-        zorder=5,
     )
 
     _limites(
@@ -788,6 +796,12 @@ def grafico_transparente(
         fechas.max(),
         valores.min(),
         valores.max(),
+    )
+
+    print(
+        f"Guardando gráfico transparente en: "
+        f"{ruta_salida.resolve()}",
+        flush=True,
     )
 
     fig.savefig(
@@ -800,10 +814,9 @@ def grafico_transparente(
 
     plt.close(fig)
 
-    print(
-        f"Gráfico transparente generado: "
-        f"{ruta_salida}",
-        flush=True,
+    diagnosticar_archivo(
+        ruta_salida,
+        "PNG transparente después de guardar",
     )
 
     return ruta_salida
@@ -881,6 +894,47 @@ def main():
         flush=True,
     )
 
+    print(
+        f"Script ejecutado desde: "
+        f"{Path(__file__).resolve()}",
+        flush=True,
+    )
+
+    print(
+        f"Carpeta del proyecto: "
+        f"{CARPETA.resolve()}",
+        flush=True,
+    )
+
+    print(
+        f"Directorio de trabajo actual: "
+        f"{Path.cwd().resolve()}",
+        flush=True,
+    )
+
+    print(
+        "\nRutas de salida configuradas:",
+        flush=True,
+    )
+
+    print(
+        f"- datos.xlsx: "
+        f"{RUTA_DATOS.resolve()}",
+        flush=True,
+    )
+
+    print(
+        f"- grafico_ipsa.png: "
+        f"{RUTA_GRAFICO.resolve()}",
+        flush=True,
+    )
+
+    print(
+        f"- ipsa_transparente.png: "
+        f"{RUTA_TRANSPARENTE.resolve()}",
+        flush=True,
+    )
+
     bolsas_bruto = descargar_datos()
 
     generar_graficos_ipsa(
@@ -889,16 +943,33 @@ def main():
     )
 
     print(
+        "\n========================================",
+        flush=True,
+    )
+
+    print(
         "Proceso completado correctamente.",
         flush=True,
     )
 
     print(
-        f"Archivos generados:\n"
-        f"- {RUTA_DATOS.name}\n"
-        f"- {RUTA_GRAFICO.name}\n"
-        f"- {RUTA_TRANSPARENTE.name}",
+        "========================================",
         flush=True,
+    )
+
+    diagnosticar_archivo(
+        RUTA_DATOS,
+        "Resultado final datos.xlsx",
+    )
+
+    diagnosticar_archivo(
+        RUTA_GRAFICO,
+        "Resultado final grafico_ipsa.png",
+    )
+
+    diagnosticar_archivo(
+        RUTA_TRANSPARENTE,
+        "Resultado final ipsa_transparente.png",
     )
 
 
