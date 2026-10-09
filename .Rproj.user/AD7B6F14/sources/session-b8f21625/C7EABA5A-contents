@@ -1,0 +1,227 @@
+library(shiny)
+library(readxl)
+library(dplyr)
+library(tidyverse)
+library(zoo)
+library(ggplot2)
+library(plotly)
+library(scales)
+library(lubridate)
+library(rsconnect)
+
+bolsas_bruto <- read_xlsx('bolsas.xlsx')
+
+bolsas_pre <- bolsas_bruto %>%
+  setNames(c("fecha", "ipsa", "spx", "stoxx")) %>%
+  filter(fecha != first(fecha)) %>%
+  mutate(fecha = as.Date(as.numeric(fecha), origin = "1899-12-30")) %>%
+  filter(wday(fecha) %in% 2:6)
+
+fecha_lastyr <- bolsas_pre %>%
+  na.omit() %>%
+  mutate(anho = year(fecha)) %>%
+  filter(anho == year(today()) - 1) %>%
+  tail(1) %>%
+  pull(fecha)
+
+bolsas <- bolsas_pre %>%
+  na.locf() %>%
+  pivot_longer(cols = -fecha, names_to = "indice", values_to = "valor") %>%
+  mutate(
+    valor = as.numeric(valor),
+    tooltip = paste0(
+      "Valor: ", prettyNum(valor, big.mark = ".", decimal.mark = ","), "<br>",
+      "Fecha: ", format(fecha, "%d-%m-%Y")
+    )
+  )
+
+anho <- year(last(bolsas$fecha))
+ultimo_valor <- last(bolsas$valor)
+
+Sys.setlocale("LC_TIME", "es_ES.UTF-8")
+
+# Datos
+
+# UI
+ui <- fluidPage(
+  tags$head(
+    tags$style(HTML("
+    
+    body, .container-fluid, .main-panel {
+      background-color: transparent !important;
+      margin: 0 !important;
+      padding-bottom: 0 !important;
+    }
+    
+  .radio-inline input[type='radio'] {
+    transform: scale(0.8) !important;   /* achica el botón circular */
+    margin-right: 5px;
+  }
+
+  .radio-inline {
+    font-size: 11px !important;         /* achica el texto */
+    margin-right: 5px;                 /* espacio entre botones */
+  }
+  
+  "))
+  ),
+  tags$h4("Evolución de las Bolsas"),
+  
+  radioButtons(
+    inputId = "bolsa",
+    label = NULL,
+    choices = c(
+      "S&P IPSA" = "ipsa",
+      "S&P 500" = "spx",
+      "Euro Stoxx 50" = "stoxx",
+      "Comparativo" = "comparativo"
+    ),
+    selected = "ipsa",
+    inline = TRUE
+  ),
+  
+  absolutePanel(
+    top = 10, right = 10, width = "auto", fixed = TRUE, draggable = FALSE,
+    class = "panel-periodo-mini",
+    shinyWidgets::radioGroupButtons(
+      inputId = "periodo",
+      label = NULL,
+      choices = c("12 meses" = "12_meses", "5 años" = "5_anhos", "10 años" = "10_anhos"),
+      selected = "12_meses",
+      direction = "vertical",
+      size = NULL,
+      justified = FALSE,
+      status = "default"
+    )
+  ),
+  
+  fluidRow(
+    column(width = 12,
+           div(
+             style = "position: relative; left: -10px;",
+             plotlyOutput("grafico_bolsas", height = "300px", width = "100%")
+           ),
+           tags$div(
+             style = "display: flex; justify-content: space-between; align-items: center;
+                      margin-top: 10px;",
+             tags$div("Fuente: Bloomberg", style = "font-size: 10px; color: black;"),
+             tags$img(src = "footer.png", height = "20px")
+           )
+    )
+  )
+)
+
+# Server
+server <- function(input, output) {
+  
+  output$grafico_bolsas <- renderPlotly({
+    
+    if (input$periodo == "12_meses") {
+      filtrado <- bolsas %>%
+        filter(fecha >= max(fecha) %m-% years(1))
+      grosor <- 0.8
+    } else if (input$periodo == "5_anhos") {
+      filtrado <- bolsas %>%
+        filter(fecha >= max(fecha) %m-% years(5))
+      grosor <- 0.6
+    } else {
+      filtrado <- bolsas %>%
+        filter(fecha >= max(fecha) %m-% years(10))
+      grosor <- 0.4
+    }
+    
+    if (input$bolsa == "ipsa") {
+     color <- "#C5172E"
+    } else if (input$bolsa == "spx") {
+     color <- "#27548A"
+    } else if (input$bolsa == "stoxx") {
+     color <- "#309898"
+    }
+    
+    if (input$bolsa != "comparativo") {
+      
+    grafico_bolsas <- filtrado %>%
+      filter(indice == input$bolsa) %>%
+      ggplot(aes(x = fecha, y = valor)) +
+      geom_line(linewidth = grosor, color = color) +
+      geom_point(aes(text = tooltip), alpha = 0) +
+      theme_minimal() +
+      labs(
+        x = NULL, y = "Puntos de índice"
+      ) +
+      scale_y_continuous(
+        labels = label_number(big.mark = ".", decimal.mark = ",")
+      ) +
+      theme(
+        axis.title.y = element_text(size = 9),
+        panel.background = element_rect(fill = "transparent", color = NA),
+        plot.background = element_rect(fill = "transparent", color = NA),
+        legend.background = element_rect(fill = "transparent", color = NA),
+        legend.box.background = element_rect(fill = "transparent", color = NA)
+      )
+    
+    } else {
+      
+      grafico_bolsas <- filtrado %>%
+        group_by(indice) %>%
+        mutate(
+          valor = valor / first(valor) * 100
+        ) %>%
+        ungroup() %>%
+        mutate(
+          indice = factor(indice, levels = c("ipsa", "spx", "stoxx"),
+                          labels = c("S&P IPSA", "S&P 500", "Euro Stoxx 50")),
+          tooltip = paste0(
+            "Índice: ", indice, "<br>",
+            "Valor: ", prettyNum(round(valor, 2), big.mark = ".", decimal.mark = ","), "<br>",
+            "Fecha: ", format(fecha, "%d-%m-%Y")
+            )
+          ) %>%
+        ggplot(aes(x = fecha, y = valor, color = indice)) +
+        geom_line(linewidth = grosor) +
+        geom_point(aes(text = tooltip), alpha = 0) +
+        theme_minimal() +
+        labs(
+          x = NULL, y = "Base = 100"
+        ) +
+        scale_y_continuous(
+          labels = label_number(big.mark = ".", decimal.mark = ",")
+        ) +
+        scale_color_manual(
+          values = c("#C5172E", "#27548A", "#309898"), name = NULL
+        ) +
+        theme(
+          axis.title.y = element_text(size = 9),
+          panel.background = element_rect(fill = "transparent", color = NA),
+          plot.background = element_rect(fill = "transparent", color = NA),
+          legend.background = element_rect(fill = "transparent", color = NA),
+          legend.box.background = element_rect(fill = "transparent", color = NA)
+        )
+    }
+    
+    ggplotly(grafico_bolsas, tooltip = "text") %>%
+      layout(
+        dragmode = FALSE,
+        legend = list(
+          orientation = "h",
+          x = 0,
+          y = 1.2,
+          xanchor = "left",
+          font = list(size = 9),
+          tracegroupgap = 0,
+          itemsizing = "constant"
+        )
+      ) %>%
+      config(
+        displayModeBar = FALSE,
+        showTips = FALSE,
+        scrollZoom = FALSE,
+        doubleClick = FALSE,
+        staticPlot = FALSE,
+        displaylogo = FALSE,
+        responsive = TRUE
+      )
+  })
+}
+
+shinyApp(ui, server)

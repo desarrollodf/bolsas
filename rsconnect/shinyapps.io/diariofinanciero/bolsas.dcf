@@ -1,0 +1,10 @@
+name: bolsas
+title:
+username: diariofinanciero
+account: diariofinanciero
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 14615375
+bundleId: 12665934
+url: https://diariofinanciero.shinyapps.io/bolsas/
+version: 1

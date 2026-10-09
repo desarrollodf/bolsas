@@ -1,0 +1,271 @@
+library(shiny)
+library(readxl)
+library(dplyr)
+library(tidyverse)
+library(zoo)
+library(ggplot2)
+library(plotly)
+library(scales)
+library(lubridate)
+library(rsconnect)
+library(magick)
+library(grid)
+library(showtext)
+library(shadowtext)
+library(shinyWidgets)
+library(shinyBS)
+
+series_dolar = c(
+  "Dólar-Peso" = "usdclp",
+  "Dollar Index" = "dxy",
+  "BML" = "lmecopr",
+  "Comex" = "cmxcopr"
+  )
+colores_dolar = c("#1A5715", "#03A791", "#F4631E", "#CB0404")
+
+usdclp_bruto <- read_xlsx("dolar.xlsx", sheet = "usdclp") %>% mutate(code = "usdclp")
+dxy_bruto <- read_xlsx("dolar.xlsx", sheet = "dxy") %>% mutate(code = "dxy")
+comxcopr_bruto <- read_xlsx("dolar.xlsx", sheet = "cmxcopr") %>% mutate(code = "cmxcopr")
+lmecopr_bruto <- read_xlsx("dolar.xlsx", sheet = "lmecopr") %>% mutate(code = "lmecopr")
+
+dolar <- bind_rows(usdclp_bruto, dxy_bruto, comxcopr_bruto, lmecopr_bruto) %>%
+  mutate(
+    value = case_when(
+      code == "cmxcopr" ~ value * 0.01,
+      code == "lmecopr" ~ value / 2204.62262184877,
+      TRUE ~ value
+    )
+  ) %>%
+  mutate(
+    categoria = case_when(
+      code %in% c("cmxcopr", "lmecopr") ~ "cobre",
+      code == "usdclp" ~ "usdclp",
+      code == "dxy" ~ "dxy"
+      )
+    )
+
+# Datos
+
+# UI
+
+ui <- fluidPage(
+  tags$head(
+    tags$style(HTML("
+    
+    body, .container-fluid, .main-panel {
+      background-color: transparent !important;
+      margin: 0 !important;
+      padding-bottom: 0 !important;
+    }
+    
+  .radio-group-custom .pretty {
+    transform: scale(0.85);
+    margin-right: -10px !important;
+  }
+  .radio-group-custom .state label {
+    font-size: 14px !important;
+    padding-left: 3px !important;
+  }
+
+  "))
+  ),
+  
+  tags$h4(
+    "Evolución Dólar y Cobre ",
+    tags$span(
+      icon("question-circle"), 
+      id = "info_icon", 
+      style = "cursor: pointer; color: #007BFF;"
+    )
+  ),
+  bsTooltip(
+    id = "info_icon",
+    title = paste(
+      "Dólar-Peso: es el precio de un dólar en pesos chilenos.<br><br>",
+      "Dollar Index: es un índice que mide el precio del dólar frente a una",
+      "canasta de monedas de uso internacional, con una alta ponderación del euro.<br><br>",
+      "Cobre: contratos futuros a corto plazo del metal se cotizan tanto en la",
+      "Bolsa de Metales de Londres (BML) como en la bolsa mercantil Comex estadounidense,",
+      "aunque en ciertos aspectos estas plataformas cumplen roles distintos",
+      "para los inversionistas, y suelen mantener un diferencial en los precios."
+    ),
+    placement = "right",
+    trigger = "click"
+  ),
+  
+  div(class = "radio-group-custom",
+      prettyRadioButtons(
+        inputId = "indicador",
+        label = NULL,
+        choices = c(
+          "Dólar-Peso" = "usdclp",
+          "Dollar Index" = "dxy",
+          "Cobre" = "cobre",
+          "Comparativo" = "comparativo"
+        ),
+        selected = "usdclp",
+        inline = TRUE,
+        animation = "smooth",
+        status = "primary",
+        shape = "round",
+        outline = TRUE
+      )
+  ),
+  
+  absolutePanel(
+    top = 10, right = 10, width = "auto", fixed = TRUE, draggable = FALSE,
+    class = "panel-periodo-mini",
+    shinyWidgets::radioGroupButtons(
+      inputId = "periodo",
+      label = NULL,
+      choices = c(
+        "12 meses" = "1",
+        "5 años" = "5",
+        "10 años" = "10"
+        ),
+      selected = "1",
+      direction = "vertical",
+      size = NULL,
+      justified = FALSE,
+      status = "default"
+    )
+  ),
+  
+  fluidRow(
+    column(width = 12,
+           div(
+             style = "position: relative; left: -25px; top: -20px",
+             plotlyOutput("grafico", height = "300px", width = "100%")
+           ),
+           tags$div(
+             style = "display: flex; justify-content: space-between; align-items: center;
+                    margin-top: -30px;",
+             tags$div(
+               style = "font-size: 11px; color: black; display: flex; flex-direction: column; align-items: flex-start;",
+               tags$img(src = "icono-toca-el-grafico.png", height = "30px", style = "margin-bottom: 2px;"),
+               "Fuente: Bloomberg"
+             ),
+             tags$img(src = "footer.png", height = "35px")
+           )
+    )
+  )
+)
+
+# Server
+
+server <- function(input, output) {
+  
+  output$grafico <- renderPlotly({
+    
+    color_linea <- case_when(
+      input$indicador == "usdclp" ~ "#1A5715",
+      input$indicador == "dxy" ~ "#03A791",
+      TRUE ~ NA_character_
+    )
+    
+    titulo_yaxis <- case_when(
+      input$indicador == "usdclp" ~ "Pesos chilenos ($)",
+      input$indicador == "dxy" ~ "Puntos de índice",
+      input$indicador == "cobre" ~ "Dólares por libra (US$/lb)",
+      TRUE ~ "Base = 100"
+    )
+    
+    if (input$indicador != "comparativo") {
+      
+      filtrado <- dolar %>%
+        filter(
+          date >= max(date) - years(as.numeric(input$periodo)),
+          categoria == input$indicador
+        ) %>%
+        mutate(
+          code = factor(code, levels = series_dolar, labels = names(series_dolar))
+        )
+      
+      if (input$indicador == "cobre") {
+        grafico <- plot_ly(
+          data = filtrado,
+          x = ~date,
+          y = ~value,
+          color = ~code,
+          colors = c("BML" = "#CB0404", "Comex" = "#F4631E"),
+          hovertemplate = "%{fullData.name}: %{y:,.2f}<extra></extra>",
+          type = "scatter",
+          mode = "lines"
+        )
+      } else {
+        grafico <- plot_ly(
+          data = filtrado,
+          x = ~date,
+          y = ~value,
+          color = ~code,
+          type = "scatter",
+          mode = "lines",
+          line = list(color = color_linea),
+          hovertemplate = "%{fullData.name}: %{y:,.2f}<extra></extra>"
+        )
+      }
+      
+    } else {
+      
+      filtrado <- dolar %>%
+        filter(
+          code != "cmxcopr",
+          date >= max(date) - years(as.numeric(input$periodo))
+        ) %>%
+        group_by(code) %>%
+        mutate(value = value / first(value) * 100) %>%
+        ungroup() %>%
+        mutate(
+          code = factor(code,
+                        levels = c("usdclp", "dxy", "lmecopr"),
+                        labels = c("Dólar-Peso", "Dollar Index", "Cobre BML")
+                        )
+        )
+      
+      grafico <- plot_ly(
+        data = filtrado,
+        x = ~date,
+        y = ~value,
+        color = ~code,
+        colors = setNames(colores_dolar[-3], c("Dólar-Peso", "Dollar Index", "Cobre BML")),
+        hoverinfo = "text",
+        type = "scatter",
+        mode = "lines",
+        hovertemplate = "%{fullData.name}: %{y:,.0f}<extra></extra>"
+      )
+    }
+    
+    grafico %>%
+      layout(
+        hoverlabel = list(bgcolor="white"),
+        hovermode = "x unified",
+        dragmode = FALSE,
+        legend = list(
+          orientation = "h",
+          x = 0,
+          y = 1.2,
+          xanchor = "left",
+          font = list(size = 10)
+        ),
+        xaxis = list(title = ""),
+        yaxis = list(
+          title = titulo_yaxis,
+          titlefont = list(size = 12)
+          ),
+        paper_bgcolor = "rgba(0,0,0,0)",
+        plot_bgcolor = "rgba(0,0,0,0)"
+      ) %>%
+      config(
+        displayModeBar = FALSE,
+        showTips = FALSE,
+        scrollZoom = FALSE,
+        doubleClick = FALSE,
+        staticPlot = FALSE,
+        displaylogo = FALSE,
+        responsive = TRUE,
+        locale = "es"
+      )
+  })
+}
+
+shinyApp(ui, server)

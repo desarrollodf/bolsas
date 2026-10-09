@@ -1,0 +1,248 @@
+library(shiny)
+library(readxl)
+library(dplyr)
+library(tidyverse)
+library(zoo)
+library(ggplot2)
+library(plotly)
+library(scales)
+library(lubridate)
+library(rsconnect)
+library(magick)
+library(grid)
+library(showtext)
+library(shadowtext)
+
+dolar_bruto <- read_xlsx('dolar.xlsx', sheet = "usdclp")
+otros_bruto <- read_xlsx('dolar.xlsx', sheet = "otros")
+
+dolar_pre_pre <- dolar_bruto %>%
+  setNames(c("fecha", "valor")) %>%
+  filter(fecha != first(fecha)) %>%
+  mutate(activo = "usdclp") %>%
+  na.locf()
+
+otros_pre <- otros_bruto %>%
+  setNames(c("fecha", "dxy", "cmxcopr", "lmecopr")) %>%
+  filter(fecha != first(fecha)) %>%
+  na.locf() %>%
+  pivot_longer(cols = -fecha, names_to = "activo", values_to = "valor")
+
+dolar_pre <- bind_rows(dolar_pre_pre, otros_pre) %>%
+  mutate(fecha = as.Date(as.numeric(fecha), origin = "1899-12-30")) %>%
+  filter(wday(fecha) %in% 2:6)
+
+fecha_lastyr <- dolar_pre %>%
+  na.omit() %>%
+  mutate(anho = year(fecha)) %>%
+  filter(anho == year(today()) - 1) %>%
+  tail(1) %>%
+  pull(fecha)
+
+dolar <- dolar_pre %>%
+  mutate(
+    valor = as.numeric(valor),
+    valor = case_when(
+      activo == "cmxcopr" ~ valor * 0.01,
+      activo == "lmecopr" ~ valor / 2204.62262184877,
+      TRUE ~ valor
+    )
+  ) %>%
+  mutate(
+    tooltip = case_when(
+      activo == "cmxcopr" ~ paste0(
+        "Mercado: Comex<br>",
+        "Valor: ", prettyNum(round(valor, 2), big.mark = ".", decimal.mark = ","), "<br>",
+        "Fecha: ", format(fecha, "%d-%m-%Y")
+        ),
+      activo == "lmecopr" ~ paste0(
+        "Mercado: BML<br>",
+        "Valor: ", prettyNum(round(valor, 2), big.mark = ".", decimal.mark = ","), "<br>",
+        "Fecha: ", format(fecha, "%d-%m-%Y")
+      ),
+      TRUE ~ paste0(
+        "Valor: ", prettyNum(round(valor, 2), big.mark = ".", decimal.mark = ","), "<br>",
+        "Fecha: ", format(fecha, "%d-%m-%Y")
+        )
+      )
+    )
+
+dolar$valor[dolar$activo == "lmecopr" & dolar$fecha == max(dolar$fecha)] <- NA
+
+anho <- year(last(dolar$fecha))
+ultimo_valor <- last(dolar$valor[dolar$activo == "usdclp"])
+primera_fecha <- first(dolar$fecha)
+ultima_fecha <- last(dolar$fecha)
+ultima_fecha_format <- format(ultima_fecha, "%d-%m-%Y")
+
+Sys.setlocale("LC_TIME", "es_ES.UTF-8")
+
+# Datos
+
+# UI
+
+ui <- fluidPage(
+  tags$head(
+    tags$style(HTML("
+    
+    body, .container-fluid, .main-panel {
+      background-color: transparent !important;
+      margin: 0 !important;
+      padding-bottom: 0 !important;
+    }
+    
+  .radio-inline input[type='radio'] {
+    transform: scale(0.8) !important;   /* achica el botón circular */
+    margin-right: 6px;
+  }
+
+  .radio-inline {
+    font-size: 12px !important;         /* achica el texto */
+    margin-right: 15px;                 /* espacio entre botones */
+  }
+
+  "))
+  ),
+  tags$h4("Evolución Dólar y Cobre"),
+  
+  radioButtons(
+    inputId = "activo",
+    label = NULL,
+    choices = c(
+      "Dólar-Peso ($)" = "usdclp",
+      "Dollar Index (pts.)" = "dxy",
+      "Cobre (US$/lb)" = "cobre"
+    ),
+    selected = "usdclp",
+    inline = TRUE
+  ),
+  
+  absolutePanel(
+    top = 10, right = 10, width = "auto", fixed = TRUE, draggable = FALSE,
+    class = "panel-periodo-mini",
+    shinyWidgets::radioGroupButtons(
+      inputId = "periodo",
+      label = NULL,
+      choices = c("12 meses" = "12_meses", "5 años" = "5_anhos", "10 años" = "10_anhos"),
+      selected = "12_meses",
+      direction = "vertical",
+      size = NULL,
+      justified = FALSE,
+      status = "default"
+    )
+  ),
+  
+  fluidRow(
+    column(width = 12,
+           div(
+             style = "position: relative; left: -20px;",
+             plotlyOutput("grafico_dolar", height = "300px", width = "100%")
+           ),
+           tags$div(
+             style = "display: flex; justify-content: space-between; align-items: center;
+                      margin-top: 10px;",
+             tags$div("Fuente: Bloomberg", style = "font-size: 10px; color: black;"),
+             tags$img(src = "footer.png", height = "20px")
+           )
+    )
+  )
+)
+
+# Server
+
+server <- function(input, output) {
+  
+  output$grafico_dolar <- renderPlotly({
+    
+    if (input$periodo == "12_meses") {
+      pre_filtrado <- dolar %>%
+        filter(fecha >= max(fecha) %m-% years(1))
+      grosor <- 0.8
+    } else if (input$periodo == "5_anhos") {
+      pre_filtrado <- dolar %>%
+        filter(fecha >= max(fecha) %m-% years(5))
+      grosor <- 0.6
+    } else {
+      pre_filtrado <- dolar %>%
+        filter(fecha >= max(fecha) %m-% years(10))
+      grosor <- 0.4
+    }
+    
+    filtrado <- pre_filtrado %>%
+      filter(
+        activo %in% case_when(
+          input$activo == "usdclp" ~ "usdclp",
+          input$activo == "dxy" ~ "dxy",
+          input$activo == "cobre" ~ c("cmxcopr", "lmecopr")
+        )
+      )
+    
+    grafico_dolar <- filtrado %>%
+      mutate(
+        activo = factor(activo,
+                        levels = c("usdclp", "dxy", "cmxcopr", "lmecopr"),
+                        labels = c("USDCLP", "DXY", "Comex", "Bolsa de Metales de Londres"))
+        ) %>%
+      ggplot(aes(x = fecha, y = valor, color = activo)) +
+      theme_minimal() +
+      labs(
+        x = NULL, y = NULL
+      ) +
+      scale_y_continuous(
+        labels = label_number(big.mark = ".", decimal.mark = ",")
+      ) +
+      theme(
+        panel.background = element_rect(fill = "transparent", color = NA),
+        plot.background = element_rect(fill = "transparent", color = NA),
+        legend.background = element_rect(fill = "transparent", color = NA),
+        legend.box.background = element_rect(fill = "transparent", color = NA)
+      )
+    
+    if (input$activo == "cobre") {
+      grafico_dolar <- grafico_dolar +
+        geom_line(aes(color = activo), linewidth = grosor) +
+        geom_point(aes(text = tooltip), alpha = 0) +
+        scale_color_manual(
+          values = c("#F75A5A", "#8E1616"),
+          breaks = c("Comex", "Bolsa de Metales de Londres"),
+          name = NULL
+        )
+    } else if (input$activo == "usdclp") {
+      grafico_dolar <- grafico_dolar +
+        geom_line(linewidth = grosor) +
+        geom_point(aes(text = tooltip), alpha = 0) +
+        scale_color_manual(values = "#1A5715") +
+        theme(legend.position = "none")
+    } else {
+      grafico_dolar <- grafico_dolar +
+        geom_line(linewidth = grosor) +
+        geom_point(aes(text = tooltip), alpha = 0) +
+        scale_color_manual(values = "#03A791", name = NULL) +
+        theme(legend.position = "none")
+    }
+      
+    ggplotly(grafico_dolar, tooltip = "text") %>%
+      layout(
+        dragmode = FALSE,
+        legend = list(
+          orientation = "h",
+          x = 0,
+          y = 1.1,
+          xanchor = "left",
+          font = list(size = 9),
+          tracegroupgap = 0,
+          itemsizing = "constant"
+        )
+      ) %>%
+      config(
+        displayModeBar = FALSE,
+        scrollZoom = FALSE,
+        doubleClick = FALSE,
+        staticPlot = FALSE,
+        displaylogo = FALSE,
+        responsive = TRUE
+      )
+  })
+}
+
+shinyApp(ui, server)

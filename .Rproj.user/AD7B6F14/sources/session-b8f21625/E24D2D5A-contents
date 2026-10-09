@@ -1,0 +1,125 @@
+library(shiny)
+library(readxl)
+library(dplyr)
+library(zoo)
+library(ggplot2)
+library(plotly)
+library(scales)
+library(lubridate)
+library(rsconnect)
+
+bolsas_bruto <- read_xlsx('bolsas.xlsx')
+
+bolsas_pre <- bolsas_bruto %>%
+  setNames(c("fecha", "ipsa", "spx")) %>%
+  filter(fecha != first(fecha)) %>%
+  mutate(
+    fecha = as.Date(as.numeric(fecha), origin = "1899-12-30"),
+    ipsa = as.numeric(ipsa),
+    spx = as.numeric(spx)
+    ) %>%
+  filter(wday(fecha) %in% 2:6)
+
+fecha_lastyr <- bolsas_pre %>%
+  na.omit() %>%
+  mutate(anho = year(fecha)) %>%
+  filter(anho == year(today()) - 1) %>%
+  tail(1) %>%
+  pull(fecha)
+
+bolsas <- bolsas_pre %>%
+  na.locf() %>%
+  pivot_longer(cols = -fecha, names_to = "indice", values_to = "valor") %>%
+  filter(fecha >= fecha_lastyr) %>%
+  mutate(
+    tooltip = paste0(
+      "Valor: ", prettyNum(valor, big.mark = ".", decimal.mark = ","), "<br>",
+      "Fecha: ", format(fecha, "%d-%m-%Y")
+    )
+  )
+
+anho <- year(last(bolsas$fecha))
+ultimo_valor <- last(bolsas$valor)
+
+Sys.setlocale("LC_TIME", "es_ES.UTF-8")
+
+# Datos
+
+# UI
+ui <- fluidPage(
+  tags$head(
+    tags$style(HTML("
+    body, .container-fluid, .main-panel {
+      background-color: transparent !important;
+      margin: 0 !important;
+      padding-bottom: 0 !important;
+    }
+  "))
+  ),
+  titlePanel(paste("Evolución de las Bolsas en", anho)),
+  tags$h4("Cifras en puntos"),
+  radioButtons(
+    inputId = "bolsa",
+    label = NULL,
+    choices = c(
+      "S&P IPSA (Bolsa de Santiago",
+      "Bolsa de Nueva York"
+    ),
+    selected = "Bolsa de Santiago",
+    inline = TRUE
+  ),
+  fluidRow(
+    column(width = 5,
+           plotlyOutput("grafico_bolsas", height = "320px", width = "100%"),
+           tags$div(
+             style = "display: flex; justify-content: space-between; align-items: center;
+                      margin-top: 10px;",
+             tags$div("Fuente: Bloomberg", style = "font-size: 14px; color: black;"),
+             tags$img(src = "footer.png", height = "30px")
+           )
+    )
+  )
+)
+
+# Server
+server <- function(input, output) {
+  output$grafico_bolsas <- renderPlotly({
+    
+    filtrado <- bolsas %>%
+      filter(
+        indice == case_when(
+          input$bolsa == "Bolsa de Santiago" ~ "ipsa",
+          input$bolsa == "Bolsa de Nueva York" ~ "spx"
+        )
+      )
+    
+    if (input$bolsa == "Bolsa de Santiago") {
+      color <- "#C5172E"
+    } else (
+      color <- "#061763"
+    )
+    
+    grafico_bolsas <- filtrado %>%
+      ggplot(aes(x = fecha, y = valor)) +
+      geom_line(linewidth = 1, color = color) +
+      geom_point(aes(text = tooltip), alpha = 0) +
+      theme_minimal() +
+      labs(
+        x = NULL, y = NULL
+      ) +
+      scale_y_continuous(
+        labels = label_number(big.mark = ".", decimal.mark = ",")
+      ) +
+      theme(
+        panel.background = element_rect(fill = "transparent", color = NA),
+        plot.background = element_rect(fill = "transparent", color = NA),
+        legend.background = element_rect(fill = "transparent", color = NA),
+        legend.box.background = element_rect(fill = "transparent", color = NA)
+      )
+    
+    ggplotly(grafico_bolsas, tooltip = "text") %>%
+      config(displayModeBar = FALSE)
+  })
+}
+
+shinyApp(ui, server)

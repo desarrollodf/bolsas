@@ -1,0 +1,291 @@
+library(readxl)
+library(dplyr)
+library(tidyverse)
+library(zoo)
+library(ggplot2)
+library(plotly)
+library(scales)
+library(lubridate)
+library(rsconnect)
+library(shiny)
+library(shinyWidgets)
+library(shinyBS)
+
+series_multiplos <- c(
+  "S&P IPSA" = "ipsa",
+  "MSCI Latam" = "latam",
+  "S&P 500" = "spx",
+  "Euro Stoxx 50" = "euro"
+)
+
+ipsa_per <- read_xlsx("multiplos_bolsas.xlsx", sheet = paste0("per_", series_multiplos[1])) %>% mutate(code = "ipsa")
+latam_per <- read_xlsx("multiplos_bolsas.xlsx", sheet = paste0("per_", series_multiplos[2])) %>% mutate(code = "latam")
+spx_per <- read_xlsx("multiplos_bolsas.xlsx", sheet = paste0("per_", series_multiplos[3])) %>% mutate(code = "spx")
+euro_per <- read_xlsx("multiplos_bolsas.xlsx", sheet = paste0("per_", series_multiplos[4])) %>% mutate(code = "euro")
+
+ipsa_eveb <- read_xlsx("multiplos_bolsas.xlsx", sheet = paste0("eveb_", series_multiplos[1])) %>% mutate(code = "ipsa")
+latam_eveb <- read_xlsx("multiplos_bolsas.xlsx", sheet = paste0("eveb_", series_multiplos[2])) %>% mutate(code = "latam")
+spx_eveb <- read_xlsx("multiplos_bolsas.xlsx", sheet = paste0("eveb_", series_multiplos[3])) %>% mutate(code = "spx")
+euro_eveb <- read_xlsx("multiplos_bolsas.xlsx", sheet = paste0("eveb_", series_multiplos[4])) %>% mutate(code = "euro")
+
+per <- bind_rows(ipsa_per, latam_per, spx_per, euro_per) %>% mutate(categoria = "per")
+eveb <- bind_rows(ipsa_eveb, latam_eveb, spx_eveb, euro_eveb) %>% mutate(categoria = "eveb")
+
+multiplos <- bind_rows(per, eveb) %>%
+  filter(date >= max(date) - years(10))
+
+# Datos
+
+# UI
+ui <- fluidPage(
+  tags$head(
+    tags$style(HTML("
+    
+    body, .container-fluid, .main-panel {
+      background-color: transparent !important;
+      margin: 0 !important;
+      padding-bottom: 0 !important;
+    }
+  
+  "))
+  ),
+  
+  tags$h4(
+    "Múltiplos de las Bolsas ",
+    tags$span(
+      icon("question-circle"), 
+      id = "info_icon", 
+      style = "cursor: pointer; color: #007BFF;"
+    )
+  ),
+  bsTooltip(
+    id = "info_icon",
+    title = paste(
+      "Los gráficos tipo boxplot muestran en cuartiles la distribución de los datos en el intervalo de tiempo seleccionado.",
+      "En este caso, recogen datos diarios y excluyen valores atípicos.<br><br>",
+      "Los múltiplos financieros cruzan información de precios de mercado de las empresas con expectativas de resultados,",
+      "y suelen ser usados como referencias para determinar si una compañía está sobre o infravalorada.<br> <br>",
+      "Precio / Utilidad: es la razón entre la capitalización bursátil y una estimación de las utilidades de este o el próximo año.<br> <br>",
+      "EV / Ebitda: el Enterprise Value es a grandes rasgos la suma de la capitalización bursátil y la deuda financiera neta de una empresa,",
+      "mientras que el Ebitda corresponde a un resultado operacional con énfasis en los flujos (vale decir, antes de pagar intereses e impuestos",
+      "y además previo a contabilizar la depreciación de activos).",
+      "En suma, el múltiplo compara valor para accionistas y acreedores con una estimación de la capacidad de la firma para generar caja,",
+      "por lo que es preferido por muchos como un método de valoración más fidedigno, aunque no es aplicable en todos los sectores."
+    ),
+    placement = "right",
+    trigger = "click"
+  ),
+
+  tags$p("Por: Benjamín Pescio", style = "font-size: 11px; margin: 1;"),
+
+  prettyRadioButtons(
+    input = "multiplo",
+    label = NULL,
+    choices = c(
+      "Precio / Utilidad" = "per",
+      "EV / Ebitda" = "eveb"
+    ),
+    selected = "per",
+    inline = TRUE
+  ),
+  
+  absolutePanel(
+    top = 10, right = 10, width = "auto", fixed = TRUE, draggable = FALSE,
+    shinyWidgets::radioGroupButtons(
+      inputId = "intervalo",
+      label = NULL,
+      choices = c(
+        "10 años" = "10",
+        "5 años" = "5",
+        "2 años" = "2"
+      ),
+      selected = "10",
+      direction = "vertical",
+      size = NULL,
+      justified = FALSE,
+      status = "default"
+    )
+  ),
+  
+  fluidRow(
+    column(width = 12,
+           div(
+             style = "position: relative; left: -10px;",
+             plotlyOutput("grafico", height = "300px", width = "100%")
+           ),
+           tags$div(
+             style = "display: flex; justify-content: space-between; align-items: center;
+                    margin-top: 10px;",
+             tags$div(
+               style = "font-size: 10px; color: black; display: flex; flex-direction: column; align-items: flex-start;",
+               tags$img(src = "icono_flecha.svg", height = "25px", style = "margin-bottom: 2px;"),
+               "Fuente: Bloomberg"
+             ),
+             tags$img(src = "footer.png", height = "30px")
+             )
+           )
+    )
+)
+
+# Server
+
+server <- function(input, output) {
+  
+  output$grafico <- renderPlotly({
+    
+    colores = c("#C5172E", "#FFB823", "#27548A", "#309898")
+    
+    filtrado <- multiplos %>%
+      filter(categoria == input$multiplo, date >= max(date) %m-% years(as.numeric(input$intervalo))) %>%
+      mutate(code = factor(code, levels = series_multiplos, labels = names(series_multiplos)))
+    
+    filtrado_sin_outliers <- filtrado %>%
+    group_by(code) %>%
+      mutate(
+        q1 = quantile(value, 0.25, na.rm = TRUE),
+        mediana = median(value, na.rm = TRUE),
+        q3 = quantile(value, 0.75, na.rm = TRUE),
+        iqr = q3 - q1
+      ) %>%
+      filter(
+        value >= (q1 - 1.5 * iqr),
+        value <= (q3 + 1.5 * iqr)
+      ) %>%
+      mutate(
+        min = min(value, na.rm = TRUE),
+        max = max(value, na.rm = TRUE)
+      ) %>%
+      ungroup()
+      
+    
+    seleccion <- filtrado_sin_outliers %>%
+      group_by(code) %>%
+      filter(date == last(date)) %>%
+      ungroup() %>%
+      mutate(
+        tooltip_value = paste0("Actual: ", prettyNum(round(value, 1), decimal.mark = ",")),
+        tooltip_min = paste0("Mínimo: ", prettyNum(round(min, 1), decimal.mark = ",")),
+        tooltip_q1 = paste0("1° cuartil: ", prettyNum(round(q1, 1), decimal.mark = ",")),
+        tooltip_mediana = paste0("Mediana: ", prettyNum(round(mediana, 1), decimal.mark = ",")),
+        tooltip_q3 = paste0("3° cuartil: ", prettyNum(round(q3, 1), decimal.mark = ",")),
+        tooltip_max = paste0("Máximo: ", prettyNum(round(max, 1), decimal.mark = ","))
+      )
+    
+        plot_ly(
+          data = filtrado_sin_outliers,
+          y = ~value,
+          x = ~code,
+          color = ~code,
+          colors = setNames(colores, names(series_multiplos)),
+          type = "box",
+          hoverinfo = "skip",
+          boxpoints = FALSE
+        ) %>%
+          add_trace(
+            data = seleccion,
+            x = ~code,
+            y = ~value,
+            text = ~tooltip_value,
+            hoverinfo = "text",
+            type = "scatter",
+            mode = "markers",
+            marker = list(color = "red", size = 9, symbol = "diamond"),
+            inherit = FALSE,
+            showlegend = FALSE
+          ) %>%
+          add_trace(
+            data = seleccion,
+            x = ~code,
+            y = ~min,
+            text = ~tooltip_min,
+            hoverinfo = "text",
+            type = "scatter",
+            mode = "markers",
+            marker = list(color = "transparent", size = 7),
+            inherit = FALSE,
+            showlegend = FALSE
+          ) %>%
+          add_trace(
+            data = seleccion,
+            x = ~code,
+            y = ~q1,
+            text = ~tooltip_q1,
+            hoverinfo = "text",
+            type = "scatter",
+            mode = "markers",
+            marker = list(color = "transparent", size = 7),
+            inherit = FALSE,
+            showlegend = FALSE
+          ) %>%
+          add_trace(
+            data = seleccion,
+            x = ~code,
+            y = ~mediana,
+            text = ~tooltip_mediana,
+            hoverinfo = "text",
+            type = "scatter",
+            mode = "markers",
+            marker = list(color = "transparent", size = 7),
+            inherit = FALSE,
+            showlegend = FALSE
+          ) %>%
+          add_trace(
+            data = seleccion,
+            x = ~code,
+            y = ~q3,
+            text = ~tooltip_q3,
+            hoverinfo = "text",
+            type = "scatter",
+            mode = "markers",
+            marker = list(color = "transparent", size = 7),
+            inherit = FALSE,
+            showlegend = FALSE
+          ) %>%
+          add_trace(
+            data = seleccion,
+            x = ~code,
+            y = ~max,
+            text = ~tooltip_max,
+            hoverinfo = "text",
+            type = "scatter",
+            mode = "markers",
+            marker = list(color = "transparent", size = 7),
+            inherit = FALSE,
+            showlegend = FALSE
+          ) %>%
+          add_trace(
+            data = seleccion,
+            x = ~code,
+            y = ~value,
+            text = ~tooltip_value,
+            hoverinfo = "text",
+            type = "scatter",
+            mode = "markers",
+            marker = list(color = "red", size = 7),
+            inherit = FALSE,
+            showlegend = FALSE
+          ) %>%
+          plotly::layout(
+            dragmode = FALSE,
+            showlegend = FALSE,
+            yaxis = list(
+              title = "N° de veces",
+              titlefont = list(size = 12)
+              ),
+            xaxis = list(title = ""),
+            paper_bgcolor = "rgba(0,0,0,0)",
+            plot_bgcolor = "rgba(0,0,0,0)"
+          ) %>%
+          plotly::config(
+            displayModeBar = FALSE,
+            showTips = FALSE,
+            scrollZoom = FALSE,
+            doubleClick = FALSE,
+            staticPlot = FALSE,
+            displaylogo = FALSE,
+            responsive = TRUE
+          )
+  })
+}
+
+shinyApp(ui, server)

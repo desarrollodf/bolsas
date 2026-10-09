@@ -1,0 +1,86 @@
+
+# Librerías
+
+library(shiny)
+library(readxl)
+library(ggplot2)
+library(plotly)
+library(dplyr)
+library(scales)
+library(RColorBrewer)
+library(rsconnect)
+
+Sys.setlocale("LC_TIME", "es_ES.UTF-8")
+
+gobierno <- read_xlsx("gobierno.xlsx") %>%
+  group_by(date, categoria) %>%
+  mutate(prop = value / sum(value) * 100) %>%
+  ungroup() %>%
+  mutate(
+    tooltip = paste0(
+        "Monto: ", formatC(value, big.mark = ".", decimal.mark = ",", digits = 0, format = "f"), "<br>",
+        "% del Total: ", round(prop), "<br>",
+        "Fecha: ", format(date, "%b-%Y"))
+    )
+
+# Shiny
+
+ui <- fluidPage(
+  titlePanel("Stock de Renta Fija, Gobierno Central"),
+  br(),
+  
+  radioButtons(
+    inputId = "mercado",
+    label = NULL,
+    choices = c(
+      "Total",
+      "Mercado externo",
+      "Mercado local"
+      ),
+    selected = "Total",
+    inline = TRUE
+  ),
+  
+    mainPanel(
+      plotlyOutput("grafico", height = "500px", width = "700px"),
+      br(),
+      tags$div(
+        "Datos: Banco Central de Chile",
+        style = "text-align: center; font-size: 14px; color: black;"
+        )
+      )
+  )
+
+server <- function(input, output, session) {
+  
+  output$grafico <- renderPlotly({
+    
+    filtrado <- gobierno %>%
+      filter(
+        categoria == case_when(
+          input$mercado == "Total" ~ "total",
+          input$mercado == "Mercado local" ~ "mlocal",
+          input$mercado == "Mercado externo" ~ "mexterno"
+        )
+      ) %>%
+      filter(!is.na(value))
+    
+    grafico <- filtrado %>%
+      mutate(
+        code = factor(code, levels = c("esg", "noesg"), labels = c("Estándar ESG", "No ESG"))
+      ) %>%
+      ggplot(aes(x = date, y = value, color = code)) +
+      geom_line(linewidth = 1) +
+      geom_point(aes(text = tooltip), alpha = 0) +
+      theme_bw() +
+      labs(
+        x = NULL, y = "Miles de millones de pesos ($)"
+        ) +
+      scale_y_continuous(labels = label_number(big.mark = ".", decimal.mark = ",")) +
+      scale_color_manual(values = c("Estándar ESG" = "#7FC97F", "No ESG" = "#BEAED4"), name = "<br>Tipo de deuda<br>")
+    
+    ggplotly(grafico, tooltip = "text")
+  })
+}
+
+shinyApp(ui, server)
