@@ -1,4 +1,5 @@
 xbbg
+blpapi
 pandas
 matplotlib
 requests
